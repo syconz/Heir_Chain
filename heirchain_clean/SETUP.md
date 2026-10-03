@@ -21,9 +21,9 @@ cd heirchain_clean/contracts
 cp .env.example .env
 ```
 
-Open `.env` and fill in:
+Use a dedicated deployer wallet for testnet deployment. Never commit `.env` or expose this key to the frontend. Open `.env` and fill in:
 ```
-PRIVATE_KEY=your_metamask_private_key_here_no_0x_prefix
+PRIVATE_KEY=your_deployer_private_key_here_no_0x_prefix
 AMOY_RPC_URL=https://rpc-amoy.polygon.technology
 ```
 
@@ -31,9 +31,12 @@ To get your private key from MetaMask:
 - MetaMask → 3 dots → Account Details → Export Private Key
 - Remove the "0x" prefix before pasting
 
+The Hardhat configuration ignores empty or malformed keys for local compilation and tests. A valid 64-hex-character key is still required for Amoy deployment.
+
 Then deploy:
 ```bash
 npm install
+npm test
 npm run deploy:demo
 ```
 
@@ -91,9 +94,7 @@ Open http://localhost:5173
 4. Add beneficiary address + share %
 5. Add a test ERC-20 token address + amount
 6. Click Approve & Deploy
-7. Confirm 2 transactions in MetaMask:
-   - First: ERC-20 approve()
-   - Second: createWill()
+7. Confirm the approval transactions in MetaMask (one per ERC-20 token and NFT), followed by `createWill()`.
 8. Go to Dashboard — your will appears automatically
 
 ---
@@ -106,6 +107,24 @@ Open http://localhost:5173
 3. Dispute window counts down live (5 minutes)
 4. Switch to heir wallet → Heir Portal → paste owner address → Claim
 5. Assets transfer — verify on https://amoy.polygonscan.com
+
+---
+
+## Production readiness checklist
+
+Before using live values, complete these checks:
+
+- Deploy from a dedicated deployer wallet with only the required Amoy POL.
+- Run `npm test` and `npm run compile` from `contracts/`.
+- Use `npm run deploy:prod` for the 90-day inactivity and 30-day dispute configuration.
+- Copy all three deployed addresses into `frontend/.env`; do not leave partial addresses configured.
+- Set a real `VITE_WALLETCONNECT_PROJECT_ID` for wallet onboarding.
+- Confirm ERC-20 balances, NFT ownership, approvals, and the final will data from the owner wallet.
+- Register the deadman will for Chainlink Automation and confirm it appears in the upkeep dashboard.
+- Treat the V1 oracle as a manual stub; do not represent it as automated death verification.
+- Test a complete trigger, dispute, and distribution flow on Amoy before handling users.
+
+Because the contracts are non-upgradeable, changing contract logic requires a new deployment and a user migration through `revokeWill()` plus new approvals.
 
 ---
 

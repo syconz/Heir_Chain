@@ -24,17 +24,20 @@ export const WILL_REGISTRY_ABI = [
   "event GuardianVoted(address indexed owner, address indexed guardian, uint256 voteCount)",
   "event WillRevoked(address indexed owner)",
   "event WillDistributed(address indexed owner)",
+  "event IPFSMessageUpdated(address indexed owner, string cid)",
 ];
 
 export const TRIGGER_VERIFIER_ABI = [
   "function registerForMonitoring(address willOwner) external",
   "function deregisterMonitoring(address willOwner) external",
+  "function deregisterFromRegistry(address willOwner) external",
   "function manualTriggerForDemo(address _willOwner) external",
   "function oracleConfirmDeath(address _willOwner) external",
   "function checkUpkeep(bytes calldata) external view returns (bool upkeepNeeded, bytes memory performData)",
   "function getMonitoredCount() external view returns (uint256)",
   "function isMonitored(address) external view returns (bool)",
   "event DeadmanTriggered(address indexed willOwner)",
+  "event MonitoringDeregistered(address indexed willOwner)",
   "event OracleConfirmed(address indexed willOwner)",
 ];
 

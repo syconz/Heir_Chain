@@ -1,17 +1,20 @@
-import { useAccount } from "wagmi";
+import { useAccount, usePublicClient, useChainId } from "wagmi";
 import { Link } from "react-router-dom";
 import { useWillStatus, useBeneficiaries, useAssets, useGuardians, useCheckIn, useRevokeWill, useThresholds } from "../hooks/useWillRegistry";
 import { useManualTrigger } from "../hooks/useTriggerVerifier";
 import { Card, StatusBadge, CountdownTimer, InfoRow, SectionHeader, Spinner, EmptyState, Modal } from "../components/ui";
-import { shortAddr, formatTimestamp, timeAgo, TRIGGER_MODES, ASSET_TYPES } from "../utils/helpers";
-import { DEMO_MODE } from "../utils/wagmiConfig";
-import { ethers } from "ethers";
-import { useState } from "react";
+import { shortAddr, timeAgo, formatTokenAmount, TRIGGER_MODES, ASSET_TYPES } from "../utils/helpers";
+import { CHAIN_ID, DEMO_MODE } from "../utils/wagmiConfig";
+import { ERC20_ABI } from "../abis";
+import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 
 export default function Dashboard() {
   const { address, isConnected } = useAccount();
+  const chainId = useChainId();
+  const publicClient = usePublicClient();
   const [confirmRevoke, setConfirmRevoke] = useState(false);
+  const [tokenDecimals, setTokenDecimals] = useState({});
 
   const { data: will, isLoading, refetch } = useWillStatus(address);
   const { data: beneficiaries }   = useBeneficiaries(address);
@@ -22,6 +25,30 @@ export default function Dashboard() {
   const { checkIn,    isPending: checkingIn   } = useCheckIn(refetch);
   const { revokeWill, isPending: revoking     } = useRevokeWill(refetch);
   const { manualTrigger, isPending: triggering } = useManualTrigger();
+  const networkReady = DEMO_MODE || chainId === CHAIN_ID;
+
+  useEffect(() => {
+    if (DEMO_MODE || !assets?.length || !publicClient) return;
+
+    const loadTokenDecimals = async () => {
+      const erc20Assets = assets.filter((asset) => asset.assetType === 0);
+      const entries = await Promise.all(erc20Assets.map(async (asset) => {
+        try {
+          const decimals = await publicClient.readContract({
+            address: asset.tokenAddress,
+            abi: ERC20_ABI,
+            functionName: "decimals",
+          });
+          return [asset.tokenAddress.toLowerCase(), decimals];
+        } catch {
+          return [asset.tokenAddress.toLowerCase(), 18];
+        }
+      }));
+      setTokenDecimals(Object.fromEntries(entries));
+    };
+
+    loadTokenDecimals();
+  }, [assets, publicClient]);
 
   if (!isConnected && !DEMO_MODE) {
     return (
@@ -144,7 +171,7 @@ export default function Dashboard() {
                 <div className="text-right">
                   <span className="text-sm text-gray-300">
                     {a.assetType === 0
-                      ? `${ethers.formatEther(a.tokenIdOrAmount || 0n)} tokens`
+                      ? `${formatTokenAmount(a.tokenIdOrAmount, tokenDecimals[a.tokenAddress.toLowerCase()] ?? 18)} tokens`
                       : `Token ID #${a.tokenIdOrAmount?.toString()}`}
                   </span>
                   {a.assetType === 1 && a.nftBeneficiary && (
@@ -173,51 +200,21 @@ export default function Dashboard() {
         </Card>
       )}
 
-      {/* Linked wallets health check */}
+      {/* Asset custody */}
       <Card>
-        <p className="text-sm text-gray-500 mb-1 font-medium uppercase tracking-wider">Multi-wallet Coverage</p>
-        <p className="text-xs text-gray-600 mb-4">Assets from other wallets require pre-approval. Switch to each wallet and call approve() on each token.</p>
+        <p className="text-sm text-gray-500 mb-1 font-medium uppercase tracking-wider">Asset Custody</p>
+        <p className="text-xs text-gray-600 mb-4">V1 distributes assets only from the will owner's connected wallet.</p>
         <div className="flex flex-col gap-3">
           <div className="flex items-center justify-between py-2.5 border-b border-dark-600">
             <div className="flex items-center gap-3">
               <span className="w-2 h-2 rounded-full bg-brand-500" />
               <div>
-                <p className="text-sm text-gray-300">Primary wallet</p>
+                <p className="text-sm text-gray-300">Will owner wallet</p>
                 <p className="font-mono text-xs text-gray-600">{shortAddr(address)}</p>
               </div>
             </div>
             <span className="text-brand-400 text-xs font-medium">✓ Active</span>
           </div>
-          {DEMO_MODE && (
-            <>
-              <div className="flex items-center justify-between py-2.5 border-b border-dark-600">
-                <div className="flex items-center gap-3">
-                  <span className="w-2 h-2 rounded-full bg-brand-500" />
-                  <div>
-                    <p className="text-sm text-gray-300">Ledger (demo)</p>
-                    <p className="font-mono text-xs text-gray-600">0xLedg…0001</p>
-                  </div>
-                </div>
-                <span className="text-brand-400 text-xs font-medium">✓ Approved</span>
-              </div>
-              <div className="flex items-center justify-between py-2.5">
-                <div className="flex items-center gap-3">
-                  <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-                  <div>
-                    <p className="text-sm text-gray-300">MetaMask 2 (demo)</p>
-                    <p className="font-mono text-xs text-gray-600">0xMeta…0002</p>
-                  </div>
-                </div>
-                <span className="text-amber-400 text-xs font-medium">⚠ Approval needed</span>
-              </div>
-            </>
-          )}
-        </div>
-        <div className="mt-4 pt-4 border-t border-dark-600 flex items-center justify-between">
-          <p className="text-xs text-gray-600">Add more wallets when creating or re-creating your will.</p>
-          {!will.triggered && (
-            <Link to="/create" className="text-xs text-brand-500 hover:text-brand-400">+ Add wallet →</Link>
-          )}
         </div>
       </Card>
 
@@ -254,7 +251,7 @@ export default function Dashboard() {
             <button
               className="btn-primary"
               onClick={checkIn}
-              disabled={checkingIn}
+              disabled={checkingIn || !networkReady}
             >
               {checkingIn ? <><Spinner /> Checking in…</> : "✓ Check In"}
             </button>
@@ -263,7 +260,7 @@ export default function Dashboard() {
               <button
                 className="btn-secondary"
                 onClick={() => manualTrigger(address)}
-                disabled={triggering}
+                disabled={triggering || !networkReady}
               >
                 {triggering ? <><Spinner /> Triggering…</> : "⚡ Demo: Trigger Will"}
               </button>
@@ -272,10 +269,14 @@ export default function Dashboard() {
             <button
               className="btn-danger"
               onClick={() => setConfirmRevoke(true)}
+              disabled={!networkReady}
             >
               Revoke Will
             </button>
           </div>
+          {!networkReady && (
+            <p className="text-xs text-amber-400 mt-3">Switch to Polygon Amoy before submitting a transaction.</p>
+          )}
           <p className="text-xs text-gray-600 mt-3">
             Check in regularly to reset the inactivity timer and prevent accidental triggers.
           </p>
@@ -293,8 +294,8 @@ export default function Dashboard() {
         <div className="flex gap-3">
           <button
             className="btn-danger flex-1"
-            onClick={async () => { await revokeWill(); setConfirmRevoke(false); }}
-            disabled={revoking}
+            onClick={async () => { const success = await revokeWill(); if (success) setConfirmRevoke(false); }}
+            disabled={revoking || !networkReady}
           >
             {revoking ? <Spinner /> : "Yes, revoke"}
           </button>

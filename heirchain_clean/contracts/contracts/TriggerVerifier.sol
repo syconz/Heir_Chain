@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.20;
 
 import {AutomationCompatibleInterface} from "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -23,6 +23,7 @@ contract TriggerVerifier is AutomationCompatibleInterface, Ownable {
     // ─────────────── Events ───────────────
     event RegisteredForMonitoring(address indexed willOwner);
     event DeadmanTriggered(address indexed willOwner);
+    event MonitoringDeregistered(address indexed willOwner);
     event OracleConfirmed(address indexed willOwner);
     event OracleRoleGranted(address indexed account);
     event OracleRoleRevoked(address indexed account);
@@ -59,6 +60,7 @@ contract TriggerVerifier is AutomationCompatibleInterface, Ownable {
     ///         → returns uint256 0 (alive) or 1 (deceased) → fulfillRequest calls this.
     function oracleConfirmDeath(address _willOwner) external onlyOracle {
         willRegistry.triggerWill(_willOwner);
+        _deregisterMonitoring(_willOwner);
         emit OracleConfirmed(_willOwner);
     }
 
@@ -68,7 +70,17 @@ contract TriggerVerifier is AutomationCompatibleInterface, Ownable {
             msg.sender == _willOwner || msg.sender == owner(),
             "Not authorized"
         );
+        (
+            bool exists,
+            ,
+            ,
+            ,
+            ,
+            WillRegistry.TriggerMode triggerMode,
+        ) = willRegistry.getWillStatus(_willOwner);
+        require(exists && triggerMode == WillRegistry.TriggerMode.DEADMAN, "Deadman will required");
         if (!isMonitored[_willOwner]) {
+            require(monitoredOwners.length < 200, "Max monitored reached");
             monitoredOwners.push(_willOwner);
             isMonitored[_willOwner] = true;
             emit RegisteredForMonitoring(_willOwner);
@@ -77,7 +89,27 @@ contract TriggerVerifier is AutomationCompatibleInterface, Ownable {
 
     function deregisterMonitoring(address _willOwner) external {
         require(msg.sender == _willOwner || msg.sender == owner(), "Not authorized");
+        _deregisterMonitoring(_willOwner);
+    }
+
+    /// @notice Called by WillRegistry when an owner revokes an active will.
+    /// This prevents revoked wills from consuming one of the finite upkeep slots.
+    function deregisterFromRegistry(address _willOwner) external {
+        require(msg.sender == address(willRegistry), "Only registry");
+        _deregisterMonitoring(_willOwner);
+    }
+
+    function _deregisterMonitoring(address _willOwner) internal {
+        if (!isMonitored[_willOwner]) return;
+        for (uint i = 0; i < monitoredOwners.length; i++) {
+            if (monitoredOwners[i] == _willOwner) {
+                monitoredOwners[i] = monitoredOwners[monitoredOwners.length - 1];
+                monitoredOwners.pop();
+                break;
+            }
+        }
         isMonitored[_willOwner] = false;
+        emit MonitoringDeregistered(_willOwner);
     }
 
     // ─────────────── Chainlink Automation ───────────────
@@ -98,16 +130,19 @@ contract TriggerVerifier is AutomationCompatibleInterface, Ownable {
     /// @dev Chainlink node calls this when checkUpkeep returns true.
     function performUpkeep(bytes calldata performData) external override {
         address willOwner = abi.decode(performData, (address));
-        require(willRegistry.isInactive(willOwner), "Not inactive — recheck");
+        require(isMonitored[willOwner], "Not monitored -- recheck");
+        require(willRegistry.isInactive(willOwner), "Not inactive -- recheck");
         willRegistry.triggerWill(willOwner);
+        _deregisterMonitoring(willOwner);
         emit DeadmanTriggered(willOwner);
     }
 
     // ─────────────── Manual Demo Helper ───────────────
-    /// @notice If Chainlink Automation tick is slow on Mumbai, call this from
+    /// @notice If Chainlink Automation tick is slow on Amoy, call this from
     ///         the deployer wallet for the demo — same outcome, no scrambling on stage.
     function manualTriggerForDemo(address _willOwner) external onlyOwner {
         willRegistry.triggerWill(_willOwner);
+        _deregisterMonitoring(_willOwner);
         emit DeadmanTriggered(_willOwner);
     }
 

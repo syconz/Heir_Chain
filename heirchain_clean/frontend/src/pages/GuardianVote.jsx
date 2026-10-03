@@ -1,22 +1,32 @@
 import { useState } from "react";
-import { useAccount } from "wagmi";
+import { useAccount, useChainId } from "wagmi";
 import { useWillStatus, useGuardians, useCastGuardianVote, useGuardianVoteStatus } from "../hooks/useWillRegistry";
 import { Card, SectionHeader, StatusBadge, InfoRow, Spinner, EmptyState } from "../components/ui";
-import { shortAddr, timeAgo, TRIGGER_MODES } from "../utils/helpers";
-import { DEMO_MODE } from "../utils/wagmiConfig";
+import { shortAddr, timeAgo, TRIGGER_MODES, DEMO_GUARDIANS } from "../utils/helpers";
+import { CHAIN_ID, DEMO_MODE } from "../utils/wagmiConfig";
+import { validateAddress } from "../utils/validation";
 
 export default function GuardianVote() {
   const { address, isConnected } = useAccount();
+  const chainId = useChainId();
   const [willOwner, setWillOwner]   = useState("");
   const [lookupAddr, setLookupAddr] = useState("");
+  const [addressError, setAddressError] = useState("");
 
-  const { data: will, isLoading } = useWillStatus(lookupAddr || undefined);
+  const { data: will, isLoading } = useWillStatus(lookupAddr || undefined, { demoGuardian: DEMO_MODE });
   const { data: guardians }       = useGuardians(lookupAddr || undefined);
   const { hasVoted, voteCount }   = useGuardianVoteStatus(lookupAddr, address);
   const { castVote, isPending }   = useCastGuardianVote();
+  const networkReady = DEMO_MODE || chainId === CHAIN_ID;
 
   const handleLookup = (e) => {
     e.preventDefault();
+    const error = validateAddress(willOwner);
+    if (error) {
+      setAddressError(error);
+      return;
+    }
+    setAddressError("");
     setLookupAddr(willOwner.trim());
   };
 
@@ -35,12 +45,13 @@ export default function GuardianVote() {
         <form onSubmit={handleLookup} className="flex gap-2">
           <input
             value={willOwner}
-            onChange={e => setWillOwner(e.target.value)}
+            onChange={e => { setWillOwner(e.target.value); setAddressError(""); }}
             placeholder="0x… will owner address"
-            className="input flex-1 font-mono text-sm"
+            className={`input flex-1 font-mono text-sm ${addressError ? "border-red-500" : ""}`}
           />
           <button type="submit" className="btn-primary shrink-0">Look up</button>
         </form>
+        {addressError && <p className="text-xs text-red-400 mt-2">{addressError}</p>}
         {DEMO_MODE && (
           <button
             className="text-xs text-gray-600 hover:text-gray-400 mt-2"
@@ -103,14 +114,27 @@ export default function GuardianVote() {
                   </p>
                   <button
                     className="btn-primary w-full"
-                    onClick={() => castVote(lookupAddr)}
-                    disabled={isPending}
+                    onClick={() => castVote(lookupAddr, address)}
+                    disabled={isPending || !networkReady}
                   >
                     {isPending
                       ? <span className="flex items-center justify-center gap-2"><Spinner /> Submitting…</span>
-                      : "✓ Confirm Death & Cast Vote"}
+                      : DEMO_MODE ? "✓ Cast demo guardian vote" : "✓ Confirm Death & Cast Vote"}
                   </button>
+                  {!networkReady && (
+                    <p className="text-amber-400 text-xs mt-2">Switch to Polygon Amoy before voting.</p>
+                  )}
                 </div>
+              )}
+
+              {DEMO_MODE && !will.triggered && hasVoted && Number(voteCount) < Number(will.requiredGuardians) && (
+                <button
+                  className="btn-secondary w-full mt-3"
+                  onClick={() => castVote(lookupAddr, DEMO_GUARDIANS[Number(voteCount)] || `demo-guardian-${voteCount}`)}
+                  disabled={isPending}
+                >
+                  Simulate next guardian vote
+                </button>
               )}
             </Card>
           )}

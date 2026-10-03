@@ -40,18 +40,27 @@ export function Spinner({ size = "sm" }) {
 }
 
 // ─── CountdownTimer ───────────────────────────────────────────────────────
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { secondsUntil } from "../../utils/helpers";
 
 export function CountdownTimer({ targetTs, label = "Time remaining", onExpire }) {
   const [display, setDisplay] = useState(secondsUntil(targetTs));
+  const expired = useRef(false);
 
   useEffect(() => {
-    const id = setInterval(() => {
+    expired.current = false;
+
+    const update = () => {
       const t = secondsUntil(targetTs);
       setDisplay(t);
-      if (!t && onExpire) onExpire();
-    }, 1000);
+      if (!t && onExpire && !expired.current) {
+        expired.current = true;
+        onExpire();
+      }
+    };
+
+    update();
+    const id = setInterval(update, 1000);
     return () => clearInterval(id);
   }, [targetTs, onExpire]);
 
@@ -105,11 +114,21 @@ export function InfoRow({ label, value, mono = false }) {
 export function Modal({ open, onClose, title, children }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70" onClick={onClose}>
-      <div className="glass w-full max-w-md p-6 animate-fade-in" onClick={e => e.stopPropagation()}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70"
+      role="presentation"
+      onClick={onClose}
+    >
+      <div
+        className="glass w-full max-w-md p-6 animate-fade-in"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={e => e.stopPropagation()}
+      >
         <div className="flex justify-between items-center mb-5">
           <h2 className="text-lg font-semibold text-gray-100">{title}</h2>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-xl leading-none">&times;</button>
+          <button aria-label="Close dialog" onClick={onClose} className="text-gray-500 hover:text-gray-300 text-xl leading-none">&times;</button>
         </div>
         {children}
       </div>

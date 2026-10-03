@@ -1,7 +1,9 @@
-import { useWriteContract, useWaitForTransactionReceipt, useReadContract } from "wagmi";
+import { useWriteContract, useWaitForTransactionReceipt, useReadContract, usePublicClient } from "wagmi";
 import { ASSET_DISTRIBUTOR_ABI, ERC20_ABI, ERC721_ABI } from "../abis";
 import { ADDRESSES, DEMO_MODE } from "../utils/wagmiConfig";
 import { useState, useEffect } from "react";
+import { getErrorMessage } from "../utils/helpers";
+import { markDemoDistributed } from "./useWillRegistry";
 import toast from "react-hot-toast";
 
 const DIST_ADDR = ADDRESSES.assetDistributor;
@@ -9,12 +11,14 @@ const DIST_ADDR = ADDRESSES.assetDistributor;
 // ── Distribute assets after dispute window ─────────────────────────────────
 export function useDistribute() {
   const { writeContractAsync, isPending } = useWriteContract();
+  const publicClient = usePublicClient();
   const [hash, setHash] = useState(null);
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
 
   const distribute = async (willOwner) => {
     if (DEMO_MODE) {
       await new Promise(r => setTimeout(r, 1500));
+      markDemoDistributed();
       toast.success("Demo: assets distributed to heirs!");
       return true;
     }
@@ -27,9 +31,11 @@ export function useDistribute() {
       });
       setHash(h);
       toast.loading("Distributing assets…", { id: "distribute" });
+      if (!publicClient) throw new Error("Blockchain connection is not ready");
+      await publicClient.waitForTransactionReceipt({ hash: h });
       return h;
     } catch (e) {
-      toast.error(e.shortMessage || "Distribution failed");
+      toast.error(getErrorMessage(e, "Distribution failed"), { id: "distribute" });
       return null;
     }
   };
@@ -44,6 +50,7 @@ export function useDistribute() {
 // ── Approve ERC-20 spend ───────────────────────────────────────────────────
 export function useApproveERC20() {
   const { writeContractAsync, isPending } = useWriteContract();
+  const publicClient = usePublicClient();
   const [hash, setHash] = useState(null);
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
 
@@ -58,9 +65,11 @@ export function useApproveERC20() {
       });
       setHash(h);
       toast.loading("Approving token spend…", { id: "approveERC20" });
+      if (!publicClient) throw new Error("Blockchain connection is not ready");
+      await publicClient.waitForTransactionReceipt({ hash: h });
       return h;
     } catch (e) {
-      toast.error(e.shortMessage || "Approval failed");
+      toast.error(getErrorMessage(e, "Approval failed"), { id: "approveERC20" });
       return null;
     }
   };
@@ -75,6 +84,7 @@ export function useApproveERC20() {
 // ── Approve ERC-721 transfer ───────────────────────────────────────────────
 export function useApproveERC721() {
   const { writeContractAsync, isPending } = useWriteContract();
+  const publicClient = usePublicClient();
   const [hash, setHash] = useState(null);
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
 
@@ -89,9 +99,11 @@ export function useApproveERC721() {
       });
       setHash(h);
       toast.loading("Approving NFT transfer…", { id: "approveNFT" });
+      if (!publicClient) throw new Error("Blockchain connection is not ready");
+      await publicClient.waitForTransactionReceipt({ hash: h });
       return h;
     } catch (e) {
-      toast.error(e.shortMessage || "NFT approval failed");
+      toast.error(getErrorMessage(e, "NFT approval failed"), { id: "approveNFT" });
       return null;
     }
   };

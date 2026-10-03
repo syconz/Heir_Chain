@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./WillRegistry.sol";
 
@@ -12,6 +13,7 @@ import "./WillRegistry.sol";
 /// @notice V1: ERC-20 + ERC-721 only. No ETH escrow. No vesting.
 ///         Loops bounded by WillRegistry caps (max 10 beneficiaries, max 20 assets).
 contract AssetDistributor is ReentrancyGuard, Pausable, Ownable {
+    using SafeERC20 for IERC20;
 
     WillRegistry public willRegistry;
 
@@ -75,15 +77,23 @@ contract AssetDistributor is ReentrancyGuard, Pausable, Ownable {
     ) internal {
         IERC20 token = IERC20(_tokenAddress);
         // Bounded by MAX_BENEFICIARIES (10)
+        uint256 distributed;
         for (uint i = 0; i < _beneficiaries.length; i++) {
-            uint256 share = (_totalAmount * _beneficiaries[i].sharePercent) / 100;
+            // Give the final beneficiary the remainder so integer division
+            // cannot strand token dust in the owner's wallet.
+            uint256 share = i == _beneficiaries.length - 1
+                ? _totalAmount - distributed
+                : (_totalAmount * _beneficiaries[i].sharePercent) / 100;
             if (share == 0) continue;
-            bool ok = token.transferFrom(_willOwner, _beneficiaries[i].wallet, share);
-            require(ok, "ERC20 transferFrom failed");
+            token.safeTransferFrom(_willOwner, _beneficiaries[i].wallet, share);
+            distributed += share;
             emit ERC20Sent(_willOwner, _tokenAddress, _beneficiaries[i].wallet, share);
         }
     }
 
+    /// @notice Distributes an ERC-721 NFT to its explicit beneficiary.
+    /// @dev Uses `safeTransferFrom` which invokes `onERC721Received` on recipient contract.
+    ///      Protected against reentrancy attacks by `nonReentrant` modifier on the outer `distribute()` entrypoint.
     function _distributeERC721(
         address _willOwner,
         address _tokenAddress,

@@ -8,6 +8,7 @@ import "@rainbow-me/rainbowkit/styles.css";
 import "./index.css";
 import App from "./App";
 import { config } from "./utils/wagmiConfig";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 const queryClient = new QueryClient();
 
@@ -23,7 +24,9 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             fontStack: "system",
           })}
         >
-          <App />
+          <ErrorBoundary>
+            <App />
+          </ErrorBoundary>
           <Toaster
             position="top-right"
             toastOptions={{

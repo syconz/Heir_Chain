@@ -1,13 +1,13 @@
 # ⛓ HeirChain — On-chain Digital Wills
 
-> Decentralized asset inheritance on Polygon Mumbai. Your crypto, secured for your heirs.
+> Decentralized asset inheritance on Polygon Amoy. Your crypto, secured for your heirs.
 > Built for HackNova 3.0 — Web3 & Blockchain Track.
 
 ---
 
 ## What it does
 
-HeirChain lets crypto holders create on-chain wills that automatically distribute ERC-20 tokens and NFTs to named beneficiaries when a verified death trigger fires — no lawyers, no probate, no lost keys.
+HeirChain lets crypto holders create on-chain wills that programmatically distribute ERC-20 tokens and NFTs to named beneficiaries after a verified trigger and dispute window — no lawyers, no probate, no lost keys.
 
 **Three-step flow:** Register → Trigger → Distribute
 
@@ -21,7 +21,14 @@ TriggerVerifier.sol    — Chainlink Automation (deadman) + oracle stub
 AssetDistributor.sol   — executes ERC-20/ERC-721 transfers to heirs
 ```
 
-All contracts are **non-upgradeable**. No proxy, no admin key risk.
+All contracts are **non-upgradeable**. There is no proxy upgrade path, while the documented owner controls (pause, initial wiring, and V1 demo/oracle operations) remain explicit and auditable.
+
+### Immutability Rationale & V2 Migration Strategy
+
+1. **Why Non-Upgradeable:** For an inheritance protocol, users must trust that rules governing their funds cannot be modified unilaterally after will creation. No admin key can alter distribution logic or redirect beneficiary shares.
+2. **V2 Migration Path:**
+   - **For Will Owners:** Active will owners can call `revokeWill()` on V1 at any time (as long as it has not been distributed) and redeploy their will on the V2 registry.
+   - **No Stuck Funds:** Because HeirChain V1 holds approvals rather than custodying assets in an escrow pool, migrating to V2 requires only revoking approval from V1 `AssetDistributor` and approving V2 `AssetDistributor`. No contract fund drain or token lockup occurs.
 
 ---
 
@@ -44,12 +51,12 @@ All contracts are **non-upgradeable**. No proxy, no admin key risk.
 
 ```bash
 cd contracts
-cp .env.example .env      # fill in PRIVATE_KEY + MUMBAI_RPC_URL
+cp .env.example .env      # fill in PRIVATE_KEY + AMOY_RPC_URL
 npm install
 npm run compile
 npm run test
 
-# Deploy to Mumbai in DEMO mode (3min inactivity, 5min dispute window)
+# Deploy to Amoy in DEMO mode (3min inactivity, 5min dispute window)
 npm run deploy:demo
 ```
 
@@ -68,7 +75,7 @@ Set `VITE_DEMO_MODE=true` to run without a deployed contract.
 
 ## Demo flow (on stage)
 
-1. Connect MetaMask (Polygon Mumbai)
+1. Connect MetaMask (Polygon Amoy)
 2. Create will — set 2 beneficiaries (60/40), add ERC-20 + NFT asset, choose Deadman trigger
 3. Approve ERC-20 spend + NFT transfer
 4. Wait 3 minutes without checking in (or click "Demo: Trigger Will")
@@ -76,7 +83,7 @@ Set `VITE_DEMO_MODE=true` to run without a deployed contract.
 6. Switch to heir wallet → Heir Portal → Distribute Assets
 7. PolygonScan confirms token transfers
 
-> **If Chainlink Automation is slow on Mumbai:** Call `manualTriggerForDemo()` from the deployer wallet — same outcome, no scrambling on stage.
+> **If Chainlink Automation is slow on Amoy:** Call `manualTriggerForDemo()` from the deployer wallet — same outcome, no scrambling on stage.
 
 ---
 
@@ -91,14 +98,16 @@ Set `VITE_DEMO_MODE=true` to run without a deployed contract.
 - [x] `nftBeneficiary != 0` required for ERC-721
 - [x] Non-upgradeable, no proxies
 
+> V1 is non-custodial: the owner keeps assets in their wallet and approves `AssetDistributor` to transfer them later. A will is only operational while those approvals and balances remain available.
+
 ---
 
 ## Tech stack
 
 | Layer | Technology |
 |---|---|
-| Smart contracts | Solidity 0.8.19, Hardhat, OpenZeppelin |
-| Blockchain | Polygon Mumbai |
+| Smart contracts | Solidity 0.8.20, Hardhat, OpenZeppelin |
+| Blockchain | Polygon Amoy |
 | Oracle | Chainlink Automation |
 | Frontend | React, wagmi v2, RainbowKit, Vite |
 | Styling | TailwindCSS |

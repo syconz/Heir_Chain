@@ -1,24 +1,28 @@
 import { useState } from "react";
-import { useAccount } from "wagmi";
+import { useAccount, usePublicClient, useChainId } from "wagmi";
 import { useNavigate } from "react-router-dom";
-import { ethers } from "ethers";
+import { parseUnits } from "viem";
+import { ERC20_ABI } from "../abis";
 import { useCreateWill } from "../hooks/useWillRegistry";
 import { useRegisterMonitoring } from "../hooks/useTriggerVerifier";
 import { useApproveERC20, useApproveERC721 } from "../hooks/useAssetDistributor";
 import { Card, SectionHeader, Spinner } from "../components/ui";
-import { DEMO_MODE } from "../utils/wagmiConfig";
+import { CHAIN_ID, DEMO_MODE } from "../utils/wagmiConfig";
+import { getErrorMessage } from "../utils/helpers";
+import { validateAddress, validateSharePercent, totalSharesValid, validateGuardian, validateBeneficiary, validateAsset, hasDuplicateAddresses, addressesOverlap } from "../utils/validation";
 import toast from "react-hot-toast";
 
-const STEPS = ["Trigger", "Beneficiaries", "Linked Wallets", "Assets", "Review & Deploy"];
+const STEPS = ["Trigger", "Beneficiaries", "Assets", "Review & Deploy"];
 
 const EMPTY_BENEFICIARY = { wallet: "", sharePercent: "" };
-const EMPTY_ASSET       = { assetType: "0", tokenAddress: "", tokenIdOrAmount: "", nftBeneficiary: "", sourceWallet: "primary" };
-const EMPTY_LINKED      = { address: "", label: "", approved: false };
+const EMPTY_ASSET       = { assetType: "0", tokenAddress: "", tokenIdOrAmount: "", nftBeneficiary: "" };
 
 const shortAddr = (a = "") => a.length > 10 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
 
 export default function CreateWill() {
-  const { address } = useAccount();
+  const { address, isConnected } = useAccount();
+  const chainId = useChainId();
+  const publicClient = usePublicClient();
   const navigate    = useNavigate();
   const [step, setStep] = useState(0);
 
@@ -26,11 +30,11 @@ export default function CreateWill() {
   const [guardians, setGuardians]         = useState([""]);
   const [requiredGuardians, setRequired]  = useState("1");
   const [beneficiaries, setBeneficiaries] = useState([{ ...EMPTY_BENEFICIARY }]);
-  const [assets, setAssets]               = useState([{ ...EMPTY_ASSET }]);
-  const [linkedWallets, setLinkedWallets] = useState([]);
+  const [assets, setAssets]               = useState([]);
   const [ipfsCID, setIpfsCID]             = useState("");
   const [approving, setApproving]         = useState(false);
   const [done, setDone]                   = useState(false);
+  const [monitoringWarning, setMonitoringWarning] = useState("");
 
   const { createWill, isPending: creating, isSuccess } = useCreateWill();
   const { register }              = useRegisterMonitoring();
@@ -50,35 +54,88 @@ export default function CreateWill() {
 
   const updateGuardian = (i, v) => { const n = [...guardians]; n[i] = v; setGuardians(n); };
 
-  const updateLinked = (i, f, v) => { const n = [...linkedWallets]; n[i] = { ...n[i], [f]: v }; setLinkedWallets(n); };
-  const addLinked    = () => setLinkedWallets([...linkedWallets, { ...EMPTY_LINKED }]);
-  const removeLinked = (i) => setLinkedWallets(linkedWallets.filter((_, x) => x !== i));
-  const markApproved = (i) => {
-    updateLinked(i, "approved", true);
-    toast.success("Marked as approved. Remember to actually call approve() from that wallet.");
-  };
 
   // ── Validation ────────────────────────────────────────────────────────────
   const canNext = () => {
-    if (step === 0) return triggerMode === "1"
-      ? guardians.every(g => g.trim()) && Number(requiredGuardians) > 0
-      : true;
-    if (step === 1) return totalShares === 100 && beneficiaries.every(b => b.wallet.trim() && b.sharePercent);
-    if (step === 2) return true; // linked wallets — always optional
-    if (step === 3) return assets.every(a =>
-      a.tokenAddress.trim() && a.tokenIdOrAmount &&
-      (a.assetType === "0" || a.nftBeneficiary.trim())
-    );
+    if (step === 0) {
+      if (triggerMode === "1") {
+        if (guardians.some(g => validateGuardian(g) !== null)) return false;
+        const required = Number(requiredGuardians);
+        if (!required || required > guardians.length) return false;
+        if (hasDuplicateAddresses(guardians)) return false;
+      }
+      return true;
+    }
+    if (step === 1) {
+      if (!totalSharesValid(beneficiaries)) return false;
+      if (hasDuplicateAddresses(beneficiaries.map(b => b.wallet))) return false;
+      if (addressesOverlap(guardians, beneficiaries.map(b => b.wallet))) return false;
+      return beneficiaries.every(b => validateBeneficiary(b) === null);
+    }
+    if (step === 2) return assets.every(a => validateAsset(a) === null);
     return true;
   };
 
   // ── Deploy ────────────────────────────────────────────────────────────────
   const handleDeploy = async () => {
+    if (!DEMO_MODE && (!isConnected || !address)) {
+      toast.error("Connect the will owner's wallet before deploying");
+      return;
+    }
+    if (!DEMO_MODE && chainId !== CHAIN_ID) {
+      toast.error("Switch your wallet to Polygon Amoy before deploying");
+      return;
+    }
+
     setApproving(true);
+    setMonitoringWarning("");
     try {
-      for (const asset of assets.filter(a => a.sourceWallet === "primary")) {
-        if (asset.assetType === "0") await approveERC20(asset.tokenAddress, ethers.parseEther(asset.tokenIdOrAmount));
-        else await approveNFT(asset.tokenAddress, BigInt(asset.tokenIdOrAmount));
+      if (!DEMO_MODE && !publicClient) {
+        throw new Error("Blockchain connection is not ready. Refresh and reconnect your wallet.");
+      }
+
+      const decimalsByToken = new Map();
+      const assetAmounts = await Promise.all(assets.map(async (asset) => {
+        if (asset.assetType === "1") return BigInt(asset.tokenIdOrAmount);
+        const key = asset.tokenAddress.toLowerCase();
+        let decimals = decimalsByToken.get(key);
+        if (decimals === undefined) {
+          decimals = DEMO_MODE
+            ? 18
+            : await publicClient.readContract({
+                address: asset.tokenAddress,
+                abi: ERC20_ABI,
+                functionName: "decimals",
+              });
+          decimals = Number(decimals);
+          decimalsByToken.set(key, decimals);
+        }
+        return parseUnits(asset.tokenIdOrAmount, decimals);
+      }));
+
+      // Approvals are per token contract. If a user adds the same ERC-20
+      // twice, approve the aggregate or the later approve() would overwrite
+      // the allowance needed by the earlier entry.
+      const erc20Totals = new Map();
+      for (const [index, asset] of assets.entries()) {
+        if (asset.assetType !== "0") continue;
+        const key = asset.tokenAddress.toLowerCase();
+        const current = erc20Totals.get(key);
+        erc20Totals.set(key, {
+          address: asset.tokenAddress,
+          amount: (current?.amount || 0n) + assetAmounts[index],
+        });
+      }
+
+      for (const { address: tokenAddress, amount } of erc20Totals.values()) {
+        const approved = await approveERC20(tokenAddress, amount);
+        if (!approved) throw new Error(`ERC-20 approval failed for ${shortAddr(tokenAddress)}`);
+      }
+
+      for (const [index, asset] of assets.entries()) {
+        if (asset.assetType !== "1") continue;
+        const approved = await approveNFT(asset.tokenAddress, assetAmounts[index]);
+        if (!approved) throw new Error(`NFT approval failed for ${shortAddr(asset.tokenAddress)}`);
       }
 
       const result = await createWill([
@@ -86,19 +143,26 @@ export default function CreateWill() {
         BigInt(triggerMode === "1" ? requiredGuardians : 0),
         triggerMode === "1" ? guardians.filter(g => g.trim()) : [],
         beneficiaries.map(b => ({ wallet: b.wallet, sharePercent: BigInt(b.sharePercent) })),
-        assets.map(a => ({
+        assets.map((a, index) => ({
           assetType:       Number(a.assetType),
           tokenAddress:    a.tokenAddress,
-          tokenIdOrAmount: a.assetType === "0" ? ethers.parseEther(a.tokenIdOrAmount) : BigInt(a.tokenIdOrAmount),
-          nftBeneficiary:  a.assetType === "1" ? a.nftBeneficiary : ethers.ZeroAddress,
+          tokenIdOrAmount: assetAmounts[index],
+          nftBeneficiary:  a.assetType === "1" ? a.nftBeneficiary : "0x0000000000000000000000000000000000000000",
         })),
         ipfsCID,
       ]);
 
       if (result) {
-        if (triggerMode === "0" && address) await register(address);
+        if (triggerMode === "0" && address) {
+          const monitoringResult = await register(address);
+          if (!monitoringResult) {
+            setMonitoringWarning("Your will was created, but deadman monitoring could not be registered. Retry monitoring registration before relying on the inactivity trigger.");
+          }
+        }
         setDone(true);
       }
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not deploy the will"));
     } finally {
       setApproving(false);
     }
@@ -106,20 +170,19 @@ export default function CreateWill() {
 
   // ── Success ───────────────────────────────────────────────────────────────
   if (done || isSuccess) {
-    const pendingWallets = linkedWallets.filter(w => w.address.trim() && !w.approved);
     return (
       <div className="max-w-lg mx-auto animate-fade-in">
         <Card className="text-center flex flex-col items-center gap-5 py-12">
           <span className="text-5xl">✅</span>
           <div>
             <h2 className="text-2xl font-semibold text-gray-100">Will Created</h2>
-            <p className="text-gray-500 text-sm mt-2">Your on-chain will is live on Polygon Amoy.</p>
-            {pendingWallets.length > 0 && (
-              <div className="mt-4 text-left glass p-4">
-                <p className="text-amber-400 text-sm font-medium mb-2">⚠ Action needed — linked wallet approvals:</p>
-                {pendingWallets.map((w, i) => (
-                  <p key={i} className="text-gray-500 text-xs">• Switch to {w.label || shortAddr(w.address)} → call approve() for each token</p>
-                ))}
+            <p className="text-gray-500 text-sm mt-2">
+              {DEMO_MODE ? "Your demo will is ready locally." : "Your on-chain will is live on Polygon Amoy."}
+            </p>
+            {monitoringWarning && (
+              <div className="glass border-l-2 border-amber-500 text-left p-4 mt-4">
+                <p className="text-amber-400 text-sm font-medium">Monitoring needs attention</p>
+                <p className="text-gray-500 text-xs mt-1">{monitoringWarning}</p>
               </div>
             )}
           </div>
@@ -182,21 +245,33 @@ export default function CreateWill() {
                 <label className="label">Required approvals (M-of-N)</label>
                 <input type="number" min="1" max={guardians.length} value={requiredGuardians}
                   onChange={e => setRequired(e.target.value)} className="input w-28" />
+                {Number(requiredGuardians) > guardians.length && (
+                  <p className="text-xs text-red-400 mt-1">Cannot exceed {guardians.length} guardian{guardians.length > 1 ? 's' : ''}</p>
+                )}
               </div>
               <div className="flex flex-col gap-2">
                 <label className="label">Guardian addresses</label>
-                {guardians.map((g, i) => (
-                  <div key={i} className="flex gap-2">
-                    <input value={g} onChange={e => updateGuardian(i, e.target.value)}
-                      placeholder="0x…" className="input font-mono text-sm" />
-                    {guardians.length > 1 && (
-                      <button onClick={() => setGuardians(guardians.filter((_, x) => x !== i))}
-                        className="text-gray-600 hover:text-red-400 px-2">✕</button>
-                    )}
-                  </div>
-                ))}
+                {guardians.map((g, i) => {
+                  const err = g.trim() ? validateGuardian(g) : null;
+                  return (
+                    <div key={i} className="flex flex-col gap-1">
+                      <div className="flex gap-2">
+                        <input value={g} onChange={e => updateGuardian(i, e.target.value)}
+                          placeholder="0x…" className={`input font-mono text-sm ${err ? "border-red-500" : ""}`} />
+                        {guardians.length > 1 && (
+                          <button onClick={() => setGuardians(guardians.filter((_, x) => x !== i))}
+                            className="text-gray-600 hover:text-red-400 px-2">✕</button>
+                        )}
+                      </div>
+                      {err && <p className="text-xs text-red-400">{err}</p>}
+                    </div>
+                  );
+                })}
                 <button onClick={() => setGuardians([...guardians, ""])}
                   className="text-brand-500 text-sm hover:text-brand-400 text-left">+ Add guardian</button>
+                {hasDuplicateAddresses(guardians) && (
+                  <p className="text-xs text-red-400">Guardian addresses must be unique.</p>
+                )}
               </div>
             </div>
           )}
@@ -209,31 +284,52 @@ export default function CreateWill() {
           <h2 className="section-title">Add beneficiaries</h2>
           <p className="text-gray-500 text-sm mb-5">Shares must add up to 100%. Max 10 beneficiaries.</p>
           <div className="flex flex-col gap-3">
-            {beneficiaries.map((b, i) => (
-              <div key={i} className="flex gap-2 items-center">
-                <input value={b.wallet} onChange={e => updateBeneficiary(i, "wallet", e.target.value)}
-                  placeholder="0x… wallet address" className="input flex-1 font-mono text-sm" />
-                <input type="number" min="1" max="100" value={b.sharePercent}
-                  onChange={e => updateBeneficiary(i, "sharePercent", e.target.value)}
-                  placeholder="%" className="input w-20 text-center" />
-                {beneficiaries.length > 1 && (
-                  <button onClick={() => removeBeneficiary(i)} className="text-gray-600 hover:text-red-400 px-1">✕</button>
-                )}
-              </div>
-            ))}
+            {beneficiaries.map((b, i) => {
+              const addrErr = b.wallet.trim() ? validateAddress(b.wallet) : null;
+              const shareErr = b.sharePercent ? validateSharePercent(b.sharePercent) : null;
+              return (
+                <div key={i} className="flex flex-col gap-1">
+                  <div className="flex gap-2 items-center">
+                    <input value={b.wallet} onChange={e => updateBeneficiary(i, "wallet", e.target.value)}
+                      placeholder="0x… wallet address" className={`input flex-1 font-mono text-sm ${addrErr ? "border-red-500" : ""}`} />
+                    <input type="number" min="1" max="100" value={b.sharePercent}
+                      onChange={e => updateBeneficiary(i, "sharePercent", e.target.value)}
+                      placeholder="%" className={`input w-20 text-center ${shareErr ? "border-red-500" : ""}`} />
+                    {beneficiaries.length > 1 && (
+                      <button onClick={() => removeBeneficiary(i)} className="text-gray-600 hover:text-red-400 px-1">✕</button>
+                    )}
+                  </div>
+                  {(addrErr || shareErr) && (
+                    <p className="text-xs text-red-400">{addrErr || shareErr}</p>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <div className="flex items-center justify-between mt-4">
             <button onClick={addBeneficiary} className="text-brand-500 text-sm hover:text-brand-400">+ Add beneficiary</button>
             <span className={`text-sm font-medium ${totalShares === 100 ? "text-brand-400" : "text-red-400"}`}>Total: {totalShares}%</span>
           </div>
+          {hasDuplicateAddresses(beneficiaries.map(b => b.wallet)) && (
+            <p className="text-xs text-red-400 mt-2">Beneficiary addresses must be unique.</p>
+          )}
+          {addressesOverlap(guardians, beneficiaries.map(b => b.wallet)) && (
+            <p className="text-xs text-red-400 mt-1">A guardian cannot also be a beneficiary.</p>
+          )}
         </Card>
       )}
 
-      {/* ── Step 3: Assets ── */}
-      {step === 3 && (
+      {/* ── Step 2: Assets ── */}
+      {step === 2 && (
         <Card>
           <h2 className="section-title">Add assets</h2>
-          <p className="text-gray-500 text-sm mb-5">ERC-20 split by share %. NFTs go to one heir. Pick which wallet holds each asset.</p>
+          <p className="text-gray-500 text-sm mb-5">ERC-20 assets split by share percentage. NFTs go to one explicit heir. Assets must be held by the connected wallet.</p>
+          {assets.length === 0 && (
+            <div className="glass border-l-2 border-amber-500 p-4 mb-5">
+              <p className="text-amber-400 text-sm font-medium">No assets added yet</p>
+              <p className="text-gray-500 text-xs mt-1">You can create an empty will, but it will not distribute anything until it is revoked and recreated with assets.</p>
+            </div>
+          )}
           <div className="flex flex-col gap-5">
             {assets.map((a, i) => (
               <div key={i} className="glass p-4 flex flex-col gap-3">
@@ -251,12 +347,7 @@ export default function CreateWill() {
                   </div>
                   <div>
                     <label className="label">Source wallet</label>
-                    <select value={a.sourceWallet} onChange={e => updateAsset(i, "sourceWallet", e.target.value)} className="input">
-                      <option value="primary">Primary (connected)</option>
-                      {linkedWallets.map((w, wi) => (
-                        <option key={wi} value={`linked_${wi}`}>{w.label || shortAddr(w.address) || `Linked ${wi + 1}`}</option>
-                      ))}
-                    </select>
+                    <div className="input flex items-center text-gray-400">Connected wallet</div>
                   </div>
                 </div>
                 <div>
@@ -276,16 +367,10 @@ export default function CreateWill() {
                       placeholder="0x…" className="input font-mono text-sm" />
                   </div>
                 )}
-                {a.sourceWallet !== "primary" && (
-                  <div className="flex items-start gap-2 bg-amber-900/20 border border-amber-800/50 rounded-lg p-3">
-                    <span className="text-amber-400 text-xs mt-0.5">⚠</span>
-                    <p className="text-amber-400 text-xs">From a linked wallet — switch to it and call approve() before distribution.</p>
-                  </div>
-                )}
               </div>
             ))}
           </div>
-          <button onClick={addAsset} className="mt-4 text-brand-500 text-sm hover:text-brand-400">+ Add asset</button>
+          <button onClick={addAsset} disabled={assets.length >= 20} className="mt-4 text-brand-500 text-sm hover:text-brand-400 disabled:text-gray-600 disabled:cursor-not-allowed">+ Add asset</button>
           <div className="mt-5 pt-4 border-t border-dark-600">
             <label className="label">IPFS message CID (optional)</label>
             <input value={ipfsCID} onChange={e => setIpfsCID(e.target.value)}
@@ -295,82 +380,8 @@ export default function CreateWill() {
         </Card>
       )}
 
-      {/* ── Step 2: Linked Wallets ── */}
-      {step === 2 && (
-        <div className="flex flex-col gap-4">
-          <Card>
-            <h2 className="section-title">Link additional wallets</h2>
-            <p className="text-gray-500 text-sm mb-2">Crypto spread across multiple wallets? Cover them all under one will.</p>
-            <div className="glass border-l-2 border-brand-600 p-4 mb-6">
-              <p className="text-brand-400 text-sm font-medium mb-2">How it works</p>
-              <ol className="text-gray-500 text-sm space-y-1 list-decimal list-inside">
-                <li>Add each wallet address with a label</li>
-                <li>Switch MetaMask to that wallet</li>
-                <li>Call <code className="text-gray-400">approve(assetDistributorAddress, amount)</code> for each token</li>
-                <li>On distribution, one transaction pulls from all wallets</li>
-              </ol>
-            </div>
-
-            {linkedWallets.length === 0 && (
-              <p className="text-center text-gray-600 text-sm py-4">No linked wallets. Click below to add one — or skip this step.</p>
-            )}
-
-            <div className="flex flex-col gap-4">
-              {linkedWallets.map((w, i) => (
-                <div key={i} className="glass p-4 flex flex-col gap-3">
-                  <div className="flex justify-between items-center">
-                    <span className="text-gray-400 text-sm font-medium">Wallet {i + 1}</span>
-                    <button onClick={() => removeLinked(i)} className="text-gray-600 hover:text-red-400 text-sm">Remove</button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="label">Wallet address</label>
-                      <input value={w.address} onChange={e => updateLinked(i, "address", e.target.value)}
-                        placeholder="0x…" className="input font-mono text-sm" />
-                    </div>
-                    <div>
-                      <label className="label">Label</label>
-                      <input value={w.label} onChange={e => updateLinked(i, "label", e.target.value)}
-                        placeholder="e.g. Ledger, MetaMask 2" className="input text-sm" />
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between pt-1">
-                    <span className={`text-sm ${w.approved ? "text-brand-400" : "text-gray-600"}`}>
-                      {w.approved ? "✓ Approved" : "Approval pending"}
-                    </span>
-                    <button
-                      onClick={() => !w.approved && markApproved(i)}
-                      disabled={w.approved}
-                      className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                        w.approved ? "border-brand-800 text-brand-600 cursor-default" : "border-amber-700 text-amber-400 hover:bg-amber-900/30"
-                      }`}
-                    >
-                      {w.approved ? "✓ Done" : "Mark as approved"}
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <button onClick={addLinked} className="mt-4 text-brand-500 text-sm hover:text-brand-400">+ Add linked wallet</button>
-          </Card>
-
-          {linkedWallets.filter(w => w.address.trim()).length > 0 && (
-            <div className="glass border border-amber-800/50 p-4">
-              <p className="text-amber-400 text-sm font-medium mb-2">Approval checklist</p>
-              {linkedWallets.filter(w => w.address.trim()).map((w, i) => (
-                <div key={i} className="flex items-center gap-2 text-sm py-1">
-                  <span className={w.approved ? "text-brand-400" : "text-gray-600"}>{w.approved ? "✓" : "○"}</span>
-                  <span className={w.approved ? "text-gray-300" : "text-gray-600"}>{w.label || shortAddr(w.address)}</span>
-                </div>
-              ))}
-              <p className="text-gray-600 text-xs mt-2">Distribution will silently skip any wallet that hasn't approved.</p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Step 4: Review & Deploy ── */}
-      {step === 4 && (
+      {/* ── Step 3: Review & Deploy ── */}
+      {step === 3 && (
         <Card>
           <h2 className="section-title">Review & Deploy</h2>
           <div className="flex flex-col gap-3 mb-6">
@@ -389,26 +400,14 @@ export default function CreateWill() {
             </div>
             <div className="glass p-4 flex flex-col gap-2">
               <span className="text-xs text-gray-500 uppercase tracking-wider mb-1">Assets ({assets.length})</span>
+              {assets.length === 0 && <span className="text-gray-600 text-sm">No assets selected</span>}
               {assets.map((a, i) => (
                 <div key={i} className="flex justify-between text-sm">
                   <span className="text-gray-400">{a.assetType === "0" ? "ERC-20" : "NFT"}: {shortAddr(a.tokenAddress)}</span>
-                  <span className={a.sourceWallet === "primary" ? "text-gray-600 text-xs" : "text-amber-400 text-xs"}>
-                    {a.sourceWallet === "primary" ? "Primary" : "Linked"}
-                  </span>
+                  <span className="text-gray-600 text-xs">Connected wallet</span>
                 </div>
               ))}
             </div>
-            {linkedWallets.filter(w => w.address.trim()).length > 0 && (
-              <div className="glass p-4 flex flex-col gap-2">
-                <span className="text-xs text-gray-500 uppercase tracking-wider mb-1">Linked wallets</span>
-                {linkedWallets.filter(w => w.address.trim()).map((w, i) => (
-                  <div key={i} className="flex justify-between text-sm">
-                    <span className="font-mono text-gray-400">{shortAddr(w.address)}</span>
-                    <span className={w.approved ? "text-brand-400" : "text-amber-400"}>{w.approved ? "✓ Approved" : "⚠ Not approved"}</span>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
 
           <div className="glass border-l-2 border-amber-600 p-4 mb-6">
@@ -416,13 +415,17 @@ export default function CreateWill() {
             <ul className="text-gray-500 text-sm mt-1 list-disc list-inside space-y-1">
               <li>Approves AssetDistributor on primary wallet tokens</li>
               <li>Creates your will on-chain — non-upgradeable</li>
-              {linkedWallets.filter(w => w.address && !w.approved).length > 0 && (
-                <li className="text-amber-400">{linkedWallets.filter(w => w.address && !w.approved).length} linked wallet(s) still need manual approval</li>
-              )}
+              {assets.length === 0 && <li className="text-amber-400">No assets will be distributed by this will</li>}
             </ul>
           </div>
 
-          <button className="btn-primary w-full py-3 text-base" onClick={handleDeploy} disabled={approving || creating}>
+          {!DEMO_MODE && !isConnected && (
+            <p className="text-red-400 text-sm mb-3">Connect the wallet that owns the assets before deploying.</p>
+          )}
+          {!DEMO_MODE && isConnected && chainId !== CHAIN_ID && (
+            <p className="text-amber-400 text-sm mb-3">Switch to Polygon Amoy before deploying.</p>
+          )}
+          <button className="btn-primary w-full py-3 text-base" onClick={handleDeploy} disabled={approving || creating || (!DEMO_MODE && (!isConnected || chainId !== CHAIN_ID))}>
             {(approving || creating)
               ? <span className="flex items-center justify-center gap-2"><Spinner /> Deploying…</span>
               : "🚀 Approve & Deploy Will"}

@@ -2,6 +2,8 @@ import { useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { TRIGGER_VERIFIER_ABI } from "../abis";
 import { ADDRESSES, DEMO_MODE } from "../utils/wagmiConfig";
 import { useState, useEffect } from "react";
+import { usePublicClient } from "wagmi";
+import { getErrorMessage } from "../utils/helpers";
 import toast from "react-hot-toast";
 
 const ADDR = ADDRESSES.triggerVerifier;
@@ -11,6 +13,7 @@ import { triggerDemoWill } from "./useWillRegistry";
 
 export function useRegisterMonitoring() {
   const { writeContractAsync, isPending } = useWriteContract();
+  const publicClient = usePublicClient();
   const [hash, setHash] = useState(null);
   const { isSuccess } = useWaitForTransactionReceipt({ hash });
 
@@ -24,9 +27,11 @@ export function useRegisterMonitoring() {
         args: [willOwner],
       });
       setHash(h);
+      if (!publicClient) throw new Error("Blockchain connection is not ready");
+      await publicClient.waitForTransactionReceipt({ hash: h });
       return h;
     } catch (e) {
-      console.warn("Monitor registration failed:", e.shortMessage);
+      toast.error(getErrorMessage(e, "Monitoring registration failed"), { id: "monitor" });
       return null;
     }
   };
@@ -36,6 +41,7 @@ export function useRegisterMonitoring() {
 
 export function useManualTrigger() {
   const { writeContractAsync, isPending } = useWriteContract();
+  const publicClient = usePublicClient();
   const [hash, setHash] = useState(null);
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
 
@@ -54,9 +60,11 @@ export function useManualTrigger() {
       });
       setHash(h);
       toast.loading("Triggering will…", { id: "trigger" });
+      if (!publicClient) throw new Error("Blockchain connection is not ready");
+      await publicClient.waitForTransactionReceipt({ hash: h });
       return h;
     } catch (e) {
-      toast.error(e.shortMessage || "Trigger failed");
+      toast.error(getErrorMessage(e, "Trigger failed"), { id: "trigger" });
       return null;
     }
   };

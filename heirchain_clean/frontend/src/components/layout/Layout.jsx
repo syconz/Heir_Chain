@@ -1,6 +1,7 @@
 import { Outlet, NavLink, useLocation } from "react-router-dom";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { DEMO_MODE } from "../../utils/wagmiConfig";
+import { useAccount, useChainId, useSwitchChain } from "wagmi";
+import { CHAIN_ID, CONFIGURATION_ERROR, DEMO_MODE } from "../../utils/wagmiConfig";
 
 const NAV = [
   { to: "/",          label: "Home",      exact: true },
@@ -9,6 +10,33 @@ const NAV = [
   { to: "/guardian",  label: "Guardian" },
   { to: "/heir",      label: "Heir Portal" },
 ];
+
+function NetworkNotice() {
+  const { isConnected } = useAccount();
+  const chainId = useChainId();
+  const { switchChain, isPending } = useSwitchChain();
+
+  if (DEMO_MODE || !isConnected || chainId === CHAIN_ID) return null;
+
+  return (
+    <div className="bg-amber-950/60 border-b border-amber-800 px-4 py-3">
+      <div className="max-w-6xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-sm">
+        <p className="text-amber-300">
+          <strong>Wrong network.</strong> Switch to Polygon Amoy before signing HeirChain transactions.
+        </p>
+        {switchChain && (
+          <button
+            className="btn-secondary !border-amber-700 !text-amber-200 !py-1.5 !px-3 text-xs shrink-0"
+            onClick={() => switchChain({ chainId: CHAIN_ID })}
+            disabled={isPending}
+          >
+            {isPending ? "Switching…" : "Switch network"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function Layout() {
   return (
@@ -57,6 +85,16 @@ export default function Layout() {
         </div>
       </header>
 
+      <NetworkNotice />
+
+      {CONFIGURATION_ERROR && (
+        <div className="bg-red-950/60 border-b border-red-800 px-4 py-3">
+          <div className="max-w-6xl mx-auto text-sm text-red-300">
+            Contract configuration is incomplete or invalid. Set all three Polygon Amoy contract addresses in `frontend/.env` before using live mode.
+          </div>
+        </div>
+      )}
+
       {/* Page */}
       <main className="flex-1 max-w-6xl mx-auto w-full px-4 py-8">
         <Outlet />
@@ -64,7 +102,7 @@ export default function Layout() {
 
       {/* Footer */}
       <footer className="border-t border-dark-600 py-6 text-center text-xs text-gray-600">
-        HeirChain · Polygon Mumbai · Non-upgradeable V1 · HackNova 3.0
+        HeirChain · Polygon Amoy · Non-upgradeable V1 · HackNova 3.0
       </footer>
     </div>
   );

@@ -99,10 +99,54 @@ describe("HeirChain V1", function () {
       ).to.be.revertedWith("Oracle mode: use DEADMAN or GUARDIAN in V1");
     });
 
+    it("rejects guardian configuration for a deadman will", async () => {
+      await expect(
+        willRegistry.connect(owner).createWill(
+          0, 1, [guardian1.address],
+          [{ wallet: heir1.address, sharePercent: 100 }],
+          [], ""
+        )
+      ).to.be.revertedWith("Guardians only for guardian mode");
+    });
+
+    it("rejects zero-value assets", async () => {
+      await expect(
+        willRegistry.connect(owner).createWill(
+          0, 0, [],
+          [{ wallet: heir1.address, sharePercent: 100 }],
+          [{ assetType: 0, tokenAddress: await mockERC20.getAddress(), tokenIdOrAmount: 0, nftBeneficiary: ethers.ZeroAddress }],
+          ""
+        )
+      ).to.be.revertedWith("Asset amount must be greater than zero");
+    });
+
     it("creates a guardian will successfully", async () => {
       await createGuardianWill();
       const w = await willRegistry.wills(owner.address);
       expect(w.triggerMode).to.equal(1); // GUARDIAN
+    });
+
+    it("rejects duplicate beneficiaries", async () => {
+      await expect(
+        willRegistry.connect(owner).createWill(
+          0, 0, [],
+          [
+            { wallet: heir1.address, sharePercent: 50 },
+            { wallet: heir1.address, sharePercent: 50 },
+          ],
+          [], ""
+        )
+      ).to.be.revertedWith("Duplicate beneficiary");
+    });
+
+    it("rejects duplicate guardians", async () => {
+      await expect(
+        willRegistry.connect(owner).createWill(
+          1, 2, [guardian1.address, guardian1.address],
+          [{ wallet: heir1.address, sharePercent: 100 }],
+          [], ""
+        )
+      ).to.be.revertedWith("Duplicate guardian");
     });
   });
 
@@ -129,9 +173,24 @@ describe("HeirChain V1", function () {
   describe("WillRegistry — revokeWill", () => {
     it("allows owner to revoke", async () => {
       await createDeadmanWill();
+      await triggerVerifier.registerForMonitoring(owner.address);
       await willRegistry.connect(owner).revokeWill();
       const w = await willRegistry.wills(owner.address);
       expect(w.exists).to.be.false;
+      expect(await triggerVerifier.isMonitored(owner.address)).to.be.false;
+      expect(await triggerVerifier.getMonitoredCount()).to.equal(0);
+    });
+
+    it("clears guardian votes before a will is recreated", async () => {
+      await createGuardianWill();
+      await willRegistry.connect(guardian1).castGuardianVote(owner.address);
+      await willRegistry.connect(owner).revokeWill();
+      await createGuardianWill();
+
+      expect(await willRegistry.guardianVoteCount(owner.address)).to.equal(0);
+      expect(await willRegistry.guardianVoted(owner.address, guardian1.address)).to.be.false;
+      await willRegistry.connect(guardian1).castGuardianVote(owner.address);
+      expect(await willRegistry.guardianVoteCount(owner.address)).to.equal(1);
     });
   });
 
@@ -143,6 +202,13 @@ describe("HeirChain V1", function () {
       await triggerVerifier.registerForMonitoring(owner.address);
       const [needed] = await triggerVerifier.checkUpkeep("0x");
       expect(needed).to.be.false;
+    });
+
+    it("only registers an existing deadman will", async () => {
+      await willRegistry.connect(owner).revokeWill();
+      await expect(
+        triggerVerifier.registerForMonitoring(owner.address)
+      ).to.be.revertedWith("Deadman will required");
     });
 
     it("checkUpkeep returns true after inactivity period", async () => {
@@ -159,6 +225,16 @@ describe("HeirChain V1", function () {
       await triggerVerifier.performUpkeep(performData);
       const w = await willRegistry.wills(owner.address);
       expect(w.triggered).to.be.true;
+      expect(await triggerVerifier.isMonitored(owner.address)).to.be.false;
+      expect(await triggerVerifier.getMonitoredCount()).to.equal(0);
+    });
+
+    it("removes a deregistered owner from monitoring", async () => {
+      await triggerVerifier.registerForMonitoring(owner.address);
+      expect(await triggerVerifier.getMonitoredCount()).to.equal(1);
+      await triggerVerifier.connect(owner).deregisterMonitoring(owner.address);
+      expect(await triggerVerifier.getMonitoredCount()).to.equal(0);
+      expect(await triggerVerifier.isMonitored(owner.address)).to.be.false;
     });
 
     it("manualTriggerForDemo works for deployer", async () => {
@@ -243,8 +319,9 @@ describe("HeirChain V1", function () {
           { wallet: heir2.address, sharePercent: 40 },
         ],
         [
-          { assetType: 0, tokenAddress: await mockERC20.getAddress(), tokenIdOrAmount: ethers.parseEther("100"), nftBeneficiary: ethers.ZeroAddress },
-          { assetType: 1, tokenAddress: await mockERC721.getAddress(), tokenIdOrAmount: 1, nftBeneficiary: heir1.address },
+           { assetType: 0, tokenAddress: await mockERC20.getAddress(), tokenIdOrAmount: ethers.parseEther("100"), nftBeneficiary: ethers.ZeroAddress },
+           { assetType: 0, tokenAddress: await mockERC20.getAddress(), tokenIdOrAmount: 1, nftBeneficiary: ethers.ZeroAddress },
+           { assetType: 1, tokenAddress: await mockERC721.getAddress(), tokenIdOrAmount: 1, nftBeneficiary: heir1.address },
         ],
         "ipfs://testCID"
       );
@@ -267,11 +344,14 @@ describe("HeirChain V1", function () {
       await triggerVerifier.manualTriggerForDemo(owner.address);
       await time.increase(DISPUTE + 10);
 
-      const heir1Before = await mockERC20.balanceOf(heir1.address);
-      await assetDistributor.distribute(owner.address);
+       const heir1Before = await mockERC20.balanceOf(heir1.address);
+       const heir2Before = await mockERC20.balanceOf(heir2.address);
+       await assetDistributor.distribute(owner.address);
 
-      const heir1After  = await mockERC20.balanceOf(heir1.address);
-      expect(heir1After - heir1Before).to.equal(ethers.parseEther("60")); // 60% of 100
+       const heir1After  = await mockERC20.balanceOf(heir1.address);
+       const heir2After  = await mockERC20.balanceOf(heir2.address);
+       expect(heir1After - heir1Before).to.equal(ethers.parseEther("60")); // 60% of 100
+       expect(heir2After - heir2Before).to.equal(ethers.parseEther("40") + 1n); // final beneficiary receives the rounded remainder
 
       // NFT should be with heir1 (explicit beneficiary)
       expect(await mockERC721.ownerOf(1)).to.equal(heir1.address);

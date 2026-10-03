@@ -12,11 +12,12 @@
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^4.0.0",
-    "hardhat": "^2.19.0"
+    "hardhat": "^2.19.0",
+    "solc": "0.8.20"
   },
   "dependencies": {
     "@chainlink/contracts": "^1.1.1",
-    "@openzeppelin/contracts": "^5.0.0",
+    "@openzeppelin/contracts": "5.0.2",
     "dotenv": "^16.3.1"
   }
 }

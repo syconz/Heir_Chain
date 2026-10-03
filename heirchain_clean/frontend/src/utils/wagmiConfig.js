@@ -1,5 +1,9 @@
 import { getDefaultConfig } from "@rainbow-me/rainbowkit";
 import { polygonAmoy } from "wagmi/chains";
+import { isAddress } from "viem";
+
+export const SUPPORTED_CHAIN = polygonAmoy;
+export const CHAIN_ID = polygonAmoy.id;
 
 export const config = getDefaultConfig({
   appName: "HeirChain",
@@ -14,5 +18,8 @@ export const ADDRESSES = {
   assetDistributor: import.meta.env.VITE_ASSET_DISTRIBUTOR || "",
 };
 
-export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true" || !import.meta.env.VITE_WILL_REGISTRY;
-export const CHAIN_ID  = 80002;
+export const CONTRACTS_CONFIGURED = Object.values(ADDRESSES).every((address) => isAddress(address));
+export const CONFIGURATION_ERROR = import.meta.env.VITE_DEMO_MODE !== "true"
+  && Object.values(ADDRESSES).some(Boolean)
+  && !CONTRACTS_CONFIGURED;
+export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true" || !CONTRACTS_CONFIGURED;

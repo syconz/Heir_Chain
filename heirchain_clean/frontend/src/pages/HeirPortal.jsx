@@ -1,32 +1,71 @@
-import { useState } from "react";
-import { useAccount } from "wagmi";
+import { useState, useEffect } from "react";
+import { useAccount, usePublicClient, useChainId } from "wagmi";
 import { useSearchParams } from "react-router-dom";
+import { isAddress } from "viem";
 import { useWillStatus, useBeneficiaries, useAssets } from "../hooks/useWillRegistry";
 import { useDistribute } from "../hooks/useAssetDistributor";
 import { Card, SectionHeader, StatusBadge, CountdownTimer, InfoRow, Spinner, EmptyState, Badge } from "../components/ui";
-import { shortAddr, timeAgo, ASSET_TYPES } from "../utils/helpers";
-import { DEMO_MODE } from "../utils/wagmiConfig";
-import { ethers } from "ethers";
+import { shortAddr, timeAgo, formatTokenAmount, ASSET_TYPES } from "../utils/helpers";
+import { CHAIN_ID, DEMO_MODE } from "../utils/wagmiConfig";
+import { ERC20_ABI } from "../abis";
 import toast from "react-hot-toast";
 
 export default function HeirPortal() {
   const { address, isConnected } = useAccount();
+  const chainId = useChainId();
+  const publicClient = usePublicClient();
   const [searchParams] = useSearchParams();
 
   // Pre-fill from shareable URL: /heir?owner=0x...
   const ownerFromUrl = searchParams.get("owner") || "";
   const [willOwner, setWillOwner]     = useState(ownerFromUrl);
-  const [lookupAddr, setLookupAddr]   = useState(ownerFromUrl);
+  const [lookupAddr, setLookupAddr]   = useState(isAddress(ownerFromUrl) ? ownerFromUrl : "");
   const [distributed, setDistributed] = useState(false);
+  const [addressError, setAddressError] = useState("");
+  const [tokenDecimals, setTokenDecimals] = useState({});
 
   const { data: will, isLoading, refetch } = useWillStatus(lookupAddr || undefined);
   const { data: beneficiaries } = useBeneficiaries(lookupAddr || undefined);
   const { data: assets }        = useAssets(lookupAddr || undefined);
   const { distribute, isPending, isSuccess } = useDistribute();
+  const networkReady = DEMO_MODE || chainId === CHAIN_ID;
+
+  useEffect(() => {
+    if (DEMO_MODE || !assets?.length || !publicClient) return;
+
+    const loadTokenDecimals = async () => {
+      const erc20Assets = assets.filter((asset) => asset.assetType === 0);
+      const entries = await Promise.all(erc20Assets.map(async (asset) => {
+        try {
+          const decimals = await publicClient.readContract({
+            address: asset.tokenAddress,
+            abi: ERC20_ABI,
+            functionName: "decimals",
+          });
+          return [asset.tokenAddress.toLowerCase(), decimals];
+        } catch {
+          return [asset.tokenAddress.toLowerCase(), 18];
+        }
+      }));
+      setTokenDecimals(Object.fromEntries(entries));
+    };
+
+    loadTokenDecimals();
+  }, [assets, publicClient]);
 
   const handleLookup = (e) => {
     e.preventDefault();
-    setLookupAddr(willOwner.trim());
+    const addr = willOwner.trim();
+    if (!addr) {
+      setAddressError("Address is required");
+      return;
+    }
+    if (!isAddress(addr)) {
+      setAddressError("Invalid address format");
+      return;
+    }
+    setAddressError("");
+    setLookupAddr(addr);
     setDistributed(false);
   };
 
@@ -38,6 +77,14 @@ export default function HeirPortal() {
   );
 
   const handleClaim = async () => {
+    if (!DEMO_MODE && !isConnected) {
+      toast.error("Connect a wallet to distribute the inheritance");
+      return;
+    }
+    if (!networkReady) {
+      toast.error("Switch your wallet to Polygon Amoy before distributing");
+      return;
+    }
     const result = await distribute(lookupAddr);
     if (result) { setDistributed(true); refetch(); }
   };
@@ -52,14 +99,17 @@ export default function HeirPortal() {
       {/* Lookup */}
       <Card className="mb-6">
         <h2 className="text-base font-medium text-gray-300 mb-4">Look up a will</h2>
-        <form onSubmit={handleLookup} className="flex gap-2">
-          <input
-            value={willOwner}
-            onChange={e => setWillOwner(e.target.value)}
-            placeholder="0x… will owner address"
-            className="input flex-1 font-mono text-sm"
-          />
-          <button type="submit" className="btn-primary shrink-0">Look up</button>
+        <form onSubmit={handleLookup} className="flex flex-col gap-2">
+          <div className="flex gap-2">
+            <input
+              value={willOwner}
+              onChange={e => { setWillOwner(e.target.value); setAddressError(""); }}
+              placeholder="0x… will owner address"
+              className={`input flex-1 font-mono text-sm ${addressError ? "border-red-500" : ""}`}
+            />
+            <button type="submit" className="btn-primary shrink-0">Look up</button>
+          </div>
+          {addressError && <p className="text-xs text-red-400">{addressError}</p>}
         </form>
         <div className="flex items-center gap-3 mt-2">
           {lookupAddr && (
@@ -149,15 +199,23 @@ export default function HeirPortal() {
                   <p className="text-gray-500 text-sm mt-1">Assets transferred to all beneficiaries.</p>
                 </div>
               ) : (
-                <button
-                  className="btn-primary w-full py-3"
-                  onClick={handleClaim}
-                  disabled={isPending}
-                >
-                  {isPending
-                    ? <span className="flex items-center justify-center gap-2"><Spinner /> Distributing assets…</span>
-                    : "🪙 Distribute Assets to All Heirs"}
-                </button>
+                <>
+                  {!DEMO_MODE && !isConnected && (
+                    <p className="text-amber-400 text-sm mb-3">Connect any wallet to submit the distribution transaction.</p>
+                  )}
+                  {!networkReady && (
+                    <p className="text-amber-400 text-sm mb-3">Switch to Polygon Amoy before distributing.</p>
+                  )}
+                  <button
+                    className="btn-primary w-full py-3"
+                    onClick={handleClaim}
+                    disabled={isPending || (!DEMO_MODE && (!isConnected || !networkReady))}
+                  >
+                    {isPending
+                      ? <span className="flex items-center justify-center gap-2"><Spinner /> Distributing assets…</span>
+                      : "🪙 Distribute Assets to All Heirs"}
+                  </button>
+                </>
               )}
             </Card>
           )}
@@ -188,7 +246,7 @@ export default function HeirPortal() {
                   <div className="text-right">
                     <span className="text-sm text-gray-300">
                       {a.assetType === 0
-                        ? `${ethers.formatEther(a.tokenIdOrAmount || 0n)} tokens`
+                        ? `${formatTokenAmount(a.tokenIdOrAmount, tokenDecimals[a.tokenAddress.toLowerCase()] ?? 18)} tokens`
                         : `Token ID #${a.tokenIdOrAmount?.toString()}`}
                     </span>
                     {a.assetType === 1 && (

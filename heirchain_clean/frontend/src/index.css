@@ -23,7 +23,7 @@
     @apply bg-dark-700 hover:bg-dark-600 border border-dark-500 text-gray-200 font-medium px-5 py-2.5 rounded-lg transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed;
   }
   .btn-danger {
-    @apply bg-red-900 hover:bg-red-800 border border-red-700 text-red-200 font-medium px-5 py-2.5 rounded-lg transition-colors duration-150;
+    @apply bg-red-900 hover:bg-red-800 border border-red-700 text-red-200 font-medium px-5 py-2.5 rounded-lg transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed;
   }
   .input {
     @apply w-full bg-dark-700 border border-dark-500 rounded-lg px-4 py-2.5 text-gray-100 placeholder-gray-600 focus:outline-none focus:border-brand-500 transition-colors duration-150;
